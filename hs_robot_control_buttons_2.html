@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<!--
+  Robot Arm + Chassis Control Page
+  --------------------------------
+  Open this file in a browser -- on the same computer as server.py, or on
+  a tablet/phone on the same WiFi.
+
+  How it works:
+    - The bar at the top lets you type the server's address and connect.
+    - The joystick drives the chassis; the two sliders set the arm's
+      target angles; the L/R buttons rotate the chassis in place.
+    - Every ~20ms (50 times a second) we compute the current control
+      values and send them to the server, exactly like the pygame
+      version recomputed and sent them to the motors every frame.
+    - The server sends back the arm's real measured angle after each
+      message, which is what the arm drawing on the right is based on.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Robot Control</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 10px;
+    background: #1a1a1a; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    /* stop the page from selecting text / zooming while tapping fast */
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* ---- top bar: server address + connect button + status ---- */
+  .top { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  input {
+    flex: 1; padding: 8px; font-size: 14px;
+    background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px;
+  }
+  #connectBtn {
+    padding: 8px 14px; font-size: 14px; border: none; border-radius: 6px;
+    background: #4a90e2; color: white; font-weight: 600;}
+  #connectBtn.connected { background: #d33; }
+
+  #status { font-size: 12px; padding: 4px 8px; border-radius: 4px; background: #333; color: #aaa; }
+  #status.on { background: #2d5a2d; color: #9f9; }
+  
+  #resetBtn {
+  padding: 8px 14px; font-size: 14px; border: none; border-radius: 6px;
+  background: #e67e22; color: white; font-weight: 600;}
+  #resetBtn:active {background: #d33; }
+
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #1e1e23;
+    touch-action: none; /* stop the browser from scrolling/zooming on touch */
+  }
+
+  #log {
+    font-size: 11px; color: #888; height: 70px; overflow-y: auto;
+    background: #111; padding: 8px; border-radius: 6px; margin-top: 10px;
+    font-family: monospace; max-width: 775px; margin-left: auto; margin-right: auto;
+  }
+</style>
+</head>
+<body>
+
+  <!-- Top bar: server address + connect button + status, same idea as the
+       RoboMaster template -- the controller and the robot's computer are
+       often two different devices, so the address needs to be editable. -->
+  <div class="top">
+    <input id="url" value="ws://192.168.0.103:8765">
+    <button id="connectBtn" onclick="toggleConnect()">Connect</button>
+    <button id="resetBtn" onclick="resetChassis()">Set Base to 0</button>
+    <span id="status">off</span>
+  </div>
+
+  <canvas id="ui" width="775" height="360"></canvas>
+  <div id="log">Ready. Tap Connect to start.</div>
+
+<script>
+// =====================================================================
+// 1. Config -- mirrors the constants at the top of the pygame script
+// =====================================================================
+const MAX_SPEED = 1;
+const TURN_SPEED = 60;
+const TOP_MAX_MOTOR = Math.PI;
+const BOT_MAX_MOTOR = 2.772373540856032;
+
+const BUTTON_COLOR = "rgb(0,100,255)";
+const BUTTON_PRESSED_COLOR = "rgb(60,135,230)";
+
+// =====================================================================
+// 2. Layout -- same numbers as the pygame version
+// =====================================================================
+const SCREEN_W = 775, SCREEN_H = 360;
+
+const topslider_center = { x: 140, y: 60 };
+const botslider_center = { x: 140, y: 130 };
+const slider_length = 160;
+const slider_knob_radius = 15;
+
+let topslider_x = topslider_center.x - slider_length / 2;
+let botslider_x = botslider_center.x - slider_length / 2;
+const topslider_zero = topslider_x;
+const botslider_zero = botslider_x;
+
+const arm_base = { x: 610, y: 240 };
+
+const joystick_center = { x: 145, y: 270 };
+const joystick_radius = 70;
+const knob_radius = 23;
+
+let knob_x = joystick_center.x;
+let knob_y = joystick_center.y;
+
+const right_button_center = { x: 250, y: 315 };
+const left_button_center = { x: 40, y: 315 };
+const button_radius = 27.5;
+
+// =====================================================================
+// 3. Live input state -- these get read and updated by the event
+//    handlers below, then consumed once per tick() in section 7.
+// =====================================================================
+let mousex = joystick_center.x, mousey = joystick_center.y;
+
+let dragging = false;
+let topslider_dragging = false;
+let botslider_dragging = false;
+let mouse_topslider_dragging = false;
+let mouse_botslider_dragging = false;
+let turn_left = false, turn_right = false;
+let turn_left_cont = false, turn_right_cont = false;
+let gamepadPresent = false;
+
+let current_top = 0.0, current_bot = 0.0;
+
+let chassis_x = 0.0;
+let chassis_y = 0.0;
+let chassis_z = 0.0;
+
+
+// touch identifiers -- same role as event.finger_id in the pygame version.
+// Tracking these lets us support several fingers on screen at once
+// (e.g. one finger on the joystick, another on a slider) without them
+// interfering with each other.
+let touch_joystick = null, touch_topslider = null, touch_botslider = null;
+let touch_left = null, touch_right = null;
+
+const canvas = document.getElementById("ui");
+const ctx = canvas.getContext("2d");
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Touch/mouse events give coordinates relative to the browser window;
+// this converts them into coordinates on the canvas itself (same idea
+// as pygame's touch_to_screen()).
+function getCanvasPos(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) * (canvas.width / rect.width),
+    y: (clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+// =====================================================================
+// 4. Connection bar -- mirrors the RoboMaster template's connect/status/log
+// =====================================================================
+const log = (m) => {
+  const el = document.getElementById("log");
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `[${t}] ${m}<br>`;
+  el.scrollTop = el.scrollHeight;
+};
+
+function setStatus(on) {
+  const s = document.getElementById("status");
+  const b = document.getElementById("connectBtn");
+  if (on) {
+    s.textContent = "connected"; s.classList.add("on");
+    b.textContent = "Disconnect"; b.classList.add("connected");
+  } else {
+    s.textContent = "off"; s.classList.remove("on");
+    b.textContent = "Connect"; b.classList.remove("connected");
+  }
+}
+
+let ws = null; // the WebSocket object, once connected
+
+function toggleConnect() {
+  // If we're already connected, treat the button as "Disconnect".
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.close(); return; }
+  connect();
+}
+
+function resetChassis() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log("not connected");
+    return;
+  }
+
+  ws.send(JSON.stringify({
+    type: "reset_chassis"
+  }));
+
+  log("chassis reset requested");
+}
+
+function connect() {
+  const url = document.getElementById("url").value.trim();
+  log("connecting to " + url);
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    log("error: " + e.message);
+    return;
+  }
+
+  ws.onopen = () => { setStatus(true); log("connected"); };
+  ws.onclose = () => { setStatus(false); log("closed"); };
+  ws.onerror = () => { log("error (check address / server running?)"); };
+
+  ws.onmessage = (evt) => {
+    // The server sends {"type":"telemetry", "current_top":.., "current_bot":..}
+    // after every command, plus a one-time {"type":"hello"} on connect.
+    // We only log the hello/errors -- logging telemetry would flood the
+    // log at 50 messages/sec.
+    try {
+      const data = JSON.parse(evt.data);
+      if (data.type === "hello") log("< " + data.msg);
+      if (data.current_top !== undefined) current_top = data.current_top;
+      if (data.current_bot !== undefined) current_bot = data.current_bot;
+      if (data.chassis_x !== undefined) chassis_x = data.chassis_x;
+      if (data.chassis_y !== undefined) chassis_y = data.chassis_y;
+      if (data.chassis_z !== undefined) chassis_z = data.chassis_z;
+
+    } catch (e) {
+      // ignore malformed messages
+    }
+  };
+}
+
+// =====================================================================
+// 5. Mouse input -- mirrors MOUSEBUTTONDOWN / MOUSEBUTTONUP / live mouse pos
+// =====================================================================
+// pygame calls pygame.mouse.get_pos() every frame regardless of events,
+// so we keep mousex/mousey continuously up to date the same way here.
+canvas.addEventListener("mousemove", (e) => {
+  const p = getCanvasPos(e.clientX, e.clientY);
+  mousex = p.x;
+  mousey = p.y;
+});
+
+canvas.addEventListener("mousedown", (e) => {
+  const p = getCanvasPos(e.clientX, e.clientY);
+  // Distance from the click to each control -- whichever one the click
+  // landed inside of "grabs" the mouse until it's released.
+  const dist = Math.hypot(p.x - joystick_center.x, p.y - joystick_center.y);
+  const distRight = Math.hypot(p.x - right_button_center.x, p.y - right_button_center.y);
+  const distLeft = Math.hypot(p.x - left_button_center.x, p.y - left_button_center.y);
+  const distTop = Math.hypot(p.x - topslider_x, p.y - topslider_center.y);
+  const distBot = Math.hypot(p.x - botslider_x, p.y - botslider_center.y);
+
+  if (distTop <= slider_knob_radius) {topslider_dragging = true; mouse_topslider_dragging = true;}
+  if (distBot <= slider_knob_radius) {botslider_dragging = true; mouse_botslider_dragging = true;}
+  if (dist <= joystick_radius) dragging = true;
+  if (distRight <= button_radius) turn_right = true;
+  if (distLeft <= button_radius) turn_left = true;
+});
+
+// Listen on window (not just the canvas) so a drag that ends outside the
+// canvas still lets go properly, instead of getting "stuck".
+window.addEventListener("mouseup", () => {
+  dragging = false;
+  turn_left = false;
+  turn_right = false;
+  topslider_dragging = false;
+  botslider_dragging = false;
+  mouse_topslider_dragging = false;
+  mouse_botslider_dragging = false;
+});
+
+// =====================================================================
+// 6. Touch input -- mirrors FINGERDOWN / FINGERMOTION / FINGERUP
+// =====================================================================
+function handleFingerDown(x, y, id) {
+  const dist = Math.hypot(x - joystick_center.x, y - joystick_center.y);
+  const distRight = Math.hypot(x - right_button_center.x, y - right_button_center.y);
+  const distLeft = Math.hypot(x - left_button_center.x, y - left_button_center.y);
+  const distTop = Math.hypot(x - topslider_x, y - topslider_center.y);
+  const distBot = Math.hypot(x - botslider_x, y - botslider_center.y);
+
+  // Order matters here (checked as if/elif, not independent ifs): a touch
+  // can only claim ONE control, and only if that control isn't already
+  // claimed by another finger.
+  if (dist <= joystick_radius && touch_joystick === null) {
+    touch_joystick = id;
+    dragging = true;
+  } else if (distTop <= slider_knob_radius && touch_topslider === null) {
+    touch_topslider = id;
+    topslider_dragging = true;
+  } else if (distBot <= slider_knob_radius && touch_botslider === null) {
+    touch_botslider = id;
+    botslider_dragging = true;
+  } else if (distLeft <= button_radius && touch_left === null) {
+    touch_left = id;
+    turn_left = true;
+  } else if (distRight <= button_radius && touch_right === null) {
+    touch_right = id;
+    turn_right = true;
+  }
+}
+
+function handleFingerMove(x, y, id) {
+  if (id === touch_joystick) {
+    // The joystick just needs mousex/mousey updated; the actual knob
+    // position is computed once per tick() in section 7, same as mouse.
+    mousex = x;
+    mousey = y;
+  } else if (id === touch_topslider) {
+    topslider_x = clamp(x, topslider_center.x - slider_length / 2, topslider_center.x + slider_length / 2);
+  } else if (id === touch_botslider) {
+    botslider_x = clamp(x, botslider_center.x - slider_length / 2, botslider_center.x + slider_length / 2);
+  }
+}
+
+function handleFingerUp(id) {
+  if (id === touch_joystick) {
+    touch_joystick = null;
+    dragging = false;
+  } else if (id === touch_topslider) {
+    touch_topslider = null;
+    topslider_dragging = false;
+  } else if (id === touch_botslider) {
+    touch_botslider = null;
+    botslider_dragging = false;
+  } else if (id === touch_left) {
+    touch_left = null;
+    turn_left = false;
+  } else if (id === touch_right) {
+    touch_right = null;
+    turn_right = false;
+  }
+}
+
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault(); // stop the page from scrolling/zooming
+  for (const t of e.changedTouches) {
+    const p = getCanvasPos(t.clientX, t.clientY);
+    handleFingerDown(p.x, p.y, t.identifier);
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = getCanvasPos(t.clientX, t.clientY);
+    handleFingerMove(p.x, p.y, t.identifier);
+  }
+}, { passive: false });
+
+function touchEndHandler(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) handleFingerUp(t.identifier);
+}
+canvas.addEventListener("touchend", touchEndHandler, { passive: false });
+canvas.addEventListener("touchcancel", touchEndHandler, { passive: false });
+
+// =====================================================================
+// 7. Gamepad input -- mirrors the `if controller:` block from pygame.
+//    Button/axis indices below follow the browser's "standard" gamepad
+//    mapping, which lines up with the PS-style layout the pygame code
+//    assumed. If your pad reports differently, these indices are the
+//    first thing to check (log gp.buttons / gp.axes to inspect them).
+// =====================================================================
+function pollGamepad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads[0];
+  gamepadPresent = !!gp;
+  if (!gp) return;
+
+  const deadzone = 0.1;
+  let lx = gp.axes[0] || 0;
+  let ly = gp.axes[1] || 0;
+  if (Math.abs(lx) < deadzone) lx = 0;
+  if (Math.abs(ly) < deadzone) ly = 0;
+
+  knob_x = joystick_center.x + lx * joystick_radius;
+  knob_y = joystick_center.y + ly * joystick_radius;
+  dragging = true;
+
+  const square = gp.buttons[2] && gp.buttons[2].pressed;
+  const circle = gp.buttons[1] && gp.buttons[1].pressed;
+  turn_left_cont = !!square;
+  turn_right_cont = !!circle;
+
+  // top slider: L1 (digital button) nudges it up in fixed steps;
+  // L2 (analog trigger, 0-1) pulls it down proportionally to how far
+  // it's pressed -- same two-speed feel as the pygame version.
+  const l1 = gp.buttons[4] && gp.buttons[4].pressed;
+  const l2 = gp.buttons[6] ? gp.buttons[6].value : 0;
+  if (l1) {
+    topslider_x = Math.min(topslider_x + 10, topslider_center.x + slider_length / 2);
+  }
+  if (l2 > 0.1 && topslider_x > 0) {
+    topslider_x = Math.max(topslider_x - l2 * 10, topslider_center.x - slider_length / 2);
+  }
+
+  // bottom slider: R1 / R2, same pattern as the top slider.
+  const r1 = gp.buttons[5] && gp.buttons[5].pressed;
+  const r2 = gp.buttons[7] ? gp.buttons[7].value : 0;
+  if (r1) {
+    botslider_x = Math.min(botslider_x + 5, botslider_center.x + slider_length / 2);
+  }
+  if (r2 > 0.1 && botslider_x > 0) {
+    botslider_x = Math.max(botslider_x - r2 * 5, botslider_center.x - slider_length / 2);
+  }
+}
+
+// =====================================================================
+// 8. Drawing helpers -- canvas equivalents of the pygame draw_* functions
+// =====================================================================
+function fillCircle(x, y, r, color) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function strokeCircle(x, y, r, color, width) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+function drawButton(cx, cy, pressed, label) {
+  const radius = 20;
+  // Slight movement when pressed
+  const offset = pressed ? 2 : 0;
+  // Shadow
+  fillCircle(cx, cy + 3, radius, "rgba(0,0,0,0.35)");
+  // Button
+  fillCircle(cx, cy + offset, radius, pressed ? "#3B82F6" : "#2E6FE6");
+  // Border
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = pressed ? "#70A7FF" : "#4C8EFF";
+  ctx.stroke();
+  // Label
+  ctx.fillStyle = "white";
+  ctx.font = "bold 18px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, cx, cy + offset);
+}
+
+function drawKnob(x, y, radius, pressed) {
+    const offset = pressed ? 2 : 0;
+    fillCircle(x,y + 3,radius,"rgba(0,0,0,0.35)");
+    fillCircle(x,y + offset,radius,pressed ? "#3B82F6" : "#2E6FE6");
+    strokeCircle(x,y + offset,radius,pressed ? "#70A7FF" : "#4C8EFF",2);
+}
+
+function drawSliderTrack(cx, cy, length, knobX) {
+    const left = cx - length / 2;
+    const right = cx + length / 2;
+    ctx.lineCap = "round";
+
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 30;
+    ctx.beginPath();
+    ctx.moveTo(left, cy + 3);
+    ctx.lineTo(right, cy + 3);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgb(80,80,80)";
+    ctx.lineWidth = 30;
+    ctx.beginPath();
+    ctx.moveTo(left, cy);
+    ctx.lineTo(right, cy);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgb(100,100,100)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(left + 10, cy - 6);
+    ctx.lineTo(right - 10, cy - 6);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#2E6FE6";
+    ctx.lineWidth = 18;
+    ctx.beginPath();
+    ctx.moveTo(left, cy);
+    ctx.lineTo(knobX, cy);
+    ctx.stroke();
+}
+
+// pygame's Vector2.rotate_rad, transcribed directly (standard 2D rotation
+// matrix) so the numeric offsets below (topoffset/botoffset) still line
+// up exactly with the ones tuned in the original pygame script.
+function rotateVec(x, y, angleRad) {
+  const c = Math.cos(angleRad), s = Math.sin(angleRad);
+  return { x: x * c - y * s, y: x * s + y * c };
+}
+
+function armPosition(anglebot, angletop) {
+    const L1 = 15; // cm
+    const L2 = 27; // cm
+
+    const topoffset = -2.556839856565194;
+    const botoffset = -1.0271229114213778;
+
+    // World angles of each link
+    const theta1 = anglebot + botoffset;
+    const theta2 = - angletop + anglebot + botoffset - topoffset;
+
+    // Same coordinate system as your drawing:
+    // +x = forward
+    // +y = upward
+    const x = L1 * Math.sin(theta1) + L2 * Math.sin(theta2);
+    const y = L1 * Math.cos(theta1) + L2 * Math.cos(theta2);
+    return { x, y };
+}
+
+// Draws the little two-segment arm diagram: a "bottom" segment from the
+// base to a joint, and a "top" segment from that joint to the end
+// effector, each as a filled rectangle (polygon) with rounded joints.
+function drawArm(baseX, baseY, angle2top, angle1bot) {
+  const armbot = 54, armtop = 96, armwidth = 30;
+  const topoffset = -2.556839856565194;
+  const botoffset = -1.0271229114213778;
+
+  // bottom arm segment: a rectangle pointing from base to joint
+  const dir1 = rotateVec(0, -armbot, angle1bot + botoffset);
+  const jointX = baseX + dir1.x, jointY = baseY + dir1.y;
+  const dir1len = Math.hypot(dir1.x, dir1.y) || 1;
+  const perp1raw = rotateVec(dir1.x / dir1len, dir1.y / dir1len, Math.PI / 2);
+  const perp1 = { x: perp1raw.x * (armwidth / 2), y: perp1raw.y * (armwidth / 2) };
+
+  ctx.beginPath();
+  ctx.moveTo(baseX + perp1.x, baseY + perp1.y);
+  ctx.lineTo(baseX - perp1.x, baseY - perp1.y);
+  ctx.lineTo(jointX - perp1.x, jointY - perp1.y);
+  ctx.lineTo(jointX + perp1.x, jointY + perp1.y);
+  ctx.closePath();
+  ctx.fillStyle = BUTTON_COLOR;
+  ctx.fill();
+
+  // top arm segment: a rectangle pointing from joint to end effector
+  const totalAngle = angle1bot - angle2top + botoffset - topoffset;
+  const dir2 = rotateVec(0, -armtop, totalAngle);
+  const endX = jointX + dir2.x, endY = jointY + dir2.y;
+  const dir2len = Math.hypot(dir2.x, dir2.y) || 1;
+  const perp2raw = rotateVec(dir2.x / dir2len, dir2.y / dir2len, Math.PI / 2);
+  const perp2 = { x: perp2raw.x * (armwidth / 2), y: perp2raw.y * (armwidth / 2) };
+
+  ctx.beginPath();
+  ctx.moveTo(jointX + perp2.x, jointY + perp2.y);
+  ctx.lineTo(jointX - perp2.x, jointY - perp2.y);
+  ctx.lineTo(endX - perp2.x, endY - perp2.y);
+  ctx.lineTo(endX + perp2.x, endY + perp2.y);
+  ctx.closePath();
+  ctx.fillStyle = BUTTON_PRESSED_COLOR;
+  ctx.fill();
+
+  // joints (drawn as two overlapping circles for a bit of depth)
+  fillCircle(baseX, baseY, 15, "rgb(225,225,225)");
+  fillCircle(jointX, jointY, 15, "rgb(225,225,225)");
+  fillCircle(endX, endY, 15, "rgb(225,225,225)");
+  fillCircle(baseX, baseY, 12, "rgb(100,100,100)");
+  fillCircle(jointX, jointY, 12, "rgb(100,100,100)");
+  fillCircle(endX, endY, 12, "rgb(100,100,100)");
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgb(225,225,225)";
+  ctx.font = "bold 20px Arial";
+  ctx.fillText("Arm Model", baseX - 50, Math.min(endY - 40, baseY - 110));
+}
+
+// Text anchored at its top-left corner (matches pygame's screen.blit,
+// which places a rendered surface by its top-left corner).
+function blitText(text, x, y, color = "rgb(225,225,225)") {
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = color;
+  ctx.font = "bold 20px Arial";
+  ctx.fillText(text, x, y);
+}
+
+// Text centered on a point (used for the "L"/"R" button labels).
+function centeredText(text, x, y, color = "rgb(225,225,225)") {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = color;
+  ctx.font = "bold 20px Arial";
+  ctx.fillText(text, x, y);
+}
+
+function formatSpeed(value) {
+  return (Math.abs(value) < 0.005 ? 0 : value).toFixed(2);
+}
+
+// =====================================================================
+// 9. Main loop -- 50 Hz, same as clock.tick(50) in the pygame version.
+//    Each tick: read input -> compute control values -> send to server
+//    -> redraw. This function is the direct equivalent of one iteration
+//    of the pygame `while running:` loop.
+// =====================================================================
+function tick() {
+  pollGamepad();
+
+  // Where the joystick knob is trying to move toward this frame.
+  let target_x = joystick_center.x;
+  let target_y = joystick_center.y;
+
+  if (dragging && !gamepadPresent) {
+  //if (dragging) {
+    let dx = mousex - joystick_center.x;
+    let dy = mousey - joystick_center.y;
+    const dist = Math.hypot(dx, dy);
+    // Clamp the knob to the edge of the joystick's circle so it can't
+    // be dragged out past its housing.
+    if (dist > joystick_radius-10) {
+      dx *= (joystick_radius-10) / dist;
+      dy *= (joystick_radius-10) / dist;
+    }
+    target_x = joystick_center.x + dx;
+    target_y = joystick_center.y + dy;
+  }
+
+  // While a slider is being dragged with the mouse, follow the mouse's
+  // x position (clamped to the slider's travel range). Touch dragging
+  // already updates topslider_x/botslider_x directly in handleFingerMove.
+  if (mouse_topslider_dragging) {
+    topslider_x = clamp(mousex, topslider_center.x - slider_length / 2, topslider_center.x + slider_length / 2);
+  }
+  if (mouse_botslider_dragging) {
+    botslider_x = clamp(mousex, botslider_center.x - slider_length / 2, botslider_center.x + slider_length / 2);
+  }
+
+  // Chassis rotation speed: full speed one way or the other, whichever
+  // button (or gamepad face button) is currently held.
+  let z = 0;
+  if (turn_right || turn_right_cont) z = TURN_SPEED;
+  else if (turn_left || turn_left_cont) z = -TURN_SPEED;
+
+  // Smooth the joystick knob toward its target instead of snapping there
+  // instantly -- this is what makes the knob feel like it has a bit of
+  // weight/inertia rather than teleporting under the finger/cursor.
+  const smooth = 0.25;
+  knob_x += (target_x - knob_x) * smooth;
+  knob_y += (target_y - knob_y) * smooth;
+
+  // Turn the knob's offset from center into a chassis velocity. Note the
+  // axis swap + sign flip: screen "up" (negative dy) becomes forward
+  // (positive x_speed), and screen "right" (positive dx) becomes
+  // sideways (positive y_speed) -- this matches how the chassis's x/y
+  // axes are oriented relative to the screen.
+  const dx2 = knob_x - joystick_center.x;
+  const dy2 = knob_y - joystick_center.y;
+  const x_norm = -dy2 / (joystick_radius - 10);
+  const y_norm = dx2 / (joystick_radius - 10);
+  const x_speed = x_norm * MAX_SPEED;
+  const y_speed = y_norm * MAX_SPEED;
+
+  // Turn each slider's knob position into a target arm angle, in radians,
+  // clamped to that arm segment's real range of motion.
+  const top_delta = (topslider_x - topslider_zero) / slider_length;
+  const bot_delta = (botslider_x - botslider_zero) / slider_length;
+  let angletop = clamp(top_delta * TOP_MAX_MOTOR, -TOP_MAX_MOTOR, TOP_MAX_MOTOR);
+  let anglebot = clamp(bot_delta * BOT_MAX_MOTOR, -BOT_MAX_MOTOR, BOT_MAX_MOTOR);
+
+  // Ship this frame's control values off to server.py, if we're connected.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ x_speed, y_speed, z, angletop, anglebot }));
+  }
+
+  draw(x_speed, y_speed, z, angletop, anglebot);
+}
+
+function draw(x_speed, y_speed, z, angletop, anglebot) {
+  ctx.clearRect(0, 0, SCREEN_W, SCREEN_H);
+  ctx.fillStyle = "rgb(30,30,35)";
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  ctx.strokeStyle = "rgb(38,38,43)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < SCREEN_W; x += 25) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, SCREEN_H); ctx.stroke();
+  }
+  for (let y = 0; y < SCREEN_H; y += 25) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SCREEN_W, y); ctx.stroke();
+  }
+
+  // Arm is drawn using the server's real reported angles (current_top/current_bot)
+  drawArm(arm_base.x, arm_base.y, angletop, anglebot);
+  const arm_pos = armPosition(anglebot, angletop);
+  const heading = chassis_z * Math.PI / 180;
+  const arm_worldx = arm_pos.x * Math.cos(heading) - arm_pos.y * Math.sin(heading);
+  const arm_worldy = arm_pos.x * Math.sin(heading) + arm_pos.y * Math.cos(heading);
+  const world_pos = {x: chassis_x * 100 + arm_worldx, y: chassis_y * 100 + arm_worldy};
+
+  blitText("Lacrosse Head Position (x,y,z):", 300, 20);
+  blitText(`${world_pos.x.toFixed(1)}, ${chassis_y.toFixed(1)}, ${arm_pos.y.toFixed(1)} cm`, 300, 50);
+
+  // --- top slider ---
+  drawSliderTrack(topslider_center.x, topslider_center.y, slider_length, topslider_x);
+  drawKnob(topslider_x, topslider_center.y, slider_knob_radius, topslider_dragging);
+  blitText("Top Arm", topslider_center.x - slider_length / 4, topslider_center.y - 43);
+  blitText(`Top: ${(angletop * 180 / Math.PI).toFixed(1)}°`, 570, 290);
+
+  // --- bottom slider ---
+  drawSliderTrack(botslider_center.x,botslider_center.y,slider_length,botslider_x);
+  drawKnob(botslider_x, botslider_center.y, slider_knob_radius, botslider_dragging);
+  blitText("Bottom Arm", botslider_center.x - slider_length / 3, botslider_center.y - 43);
+  blitText(`Bottom: ${(anglebot * 180 / Math.PI).toFixed(1)}°`, 570, 320);
+
+  // --- joystick ---
+  fillCircle(joystick_center.x, joystick_center.y + 5, joystick_radius + 3, "rgb(0,0,0)");
+  fillCircle(joystick_center.x, joystick_center.y, joystick_radius + 5, "rgb(100,100,100)");
+  fillCircle(joystick_center.x, joystick_center.y, joystick_radius, "rgb(80,80,80)");
+  blitText("Drive", joystick_center.x - 26, joystick_center.y - 102);
+  drawKnob(knob_x, knob_y, knob_radius, dragging);
+  blitText(`X Speed: ${formatSpeed(x_speed)}`, 300, 290);
+  blitText(`Y Speed: ${formatSpeed(y_speed)}`, 300, 320);
+
+  blitText(`Chassis (x,y): ${chassis_x.toFixed(1)}, ${chassis_y.toFixed(1)} m`, 300, 80);
+  blitText(`Heading: ${chassis_z.toFixed(1)}°`, 300, 110);
+
+  // Little arrow on the knob showing which of the 4 cardinal directions
+  // the current velocity is closest to (with a dead zone near diagonals
+  // so it doesn't flicker between two arrows).
+  const screenjoydead = 0.5;
+  const gapDistance = Math.hypot(x_speed, y_speed);
+  const diagMargin = 20;
+  let arrow = null, arrowX = 1, arrowY = -1;
+
+  if (dragging && gapDistance > screenjoydead) {
+    let arrowAngle = (Math.atan2(-y_speed, x_speed) * 180 / Math.PI) % 360;
+    if (arrowAngle < 0) arrowAngle += 360;
+
+    if (arrowAngle < 45 - diagMargin || arrowAngle > 315 + diagMargin) {
+      arrow = "↑"; arrowX = 5; arrowY = 12;
+    } else if (arrowAngle > 45 + diagMargin && arrowAngle < 135 - diagMargin) {
+      arrow = "←"; arrowX = 10; arrowY = 10;
+    } else if (arrowAngle > 135 + diagMargin && arrowAngle < 225 - diagMargin) {
+      arrow = "↓"; arrowX = 5; arrowY = 12;
+    } else if (arrowAngle > 225 + diagMargin && arrowAngle < 315 - diagMargin) {
+      arrow = "→"; arrowX = 10; arrowY = 10;
+    }
+  }
+  if (arrow) blitText(arrow, knob_x - arrowX, knob_y - arrowY);
+
+  // --- L/R turn buttons ---
+  drawButton(left_button_center.x, left_button_center.y, turn_left, "⟲");
+  drawButton(right_button_center.x, right_button_center.y, turn_right, "⟳");
+}
+
+// Run the loop at roughly 50 Hz, same rate as the pygame version's
+// clock.tick(50). Note this runs (and keeps drawing) whether or not
+// we're connected -- only the WebSocket send is gated on ws being open.
+setInterval(tick, 20);
+</script>
+</body>
+</html>
