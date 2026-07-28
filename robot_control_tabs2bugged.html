@@ -243,7 +243,7 @@ const SCREEN_W = 775, SCREEN_H = 300; // shared logical size for BOTH canvases
 //const button_radius = 22.5
 
 // ---- ui1: ----
-const ui1_wheelview_center = { x: 358, y: 95 };
+const ui1_wheelview_center = { x: 355, y: 100 };
 const ui1_wheel_body_w = 70, ui1_wheel_body_h = 118;
 
 const ui1_arm_base = { x: 600, y: 155 };
@@ -797,20 +797,20 @@ function drawWheel(c, pos, speed, angle, labelSide) {
   const w = 15, h = 28;
   c.save();
   c.translate(pos.x, pos.y);
-  //c.rotate(angle || 0);
+  c.rotate(angle || 0);
   fillRoundRect(c, -w / 2, -h / 2, w, h, 3, "#3a3f4a");
   c.strokeStyle = "rgba(255,255,255,0.25)";
   c.lineWidth = 1;
   c.strokeRect(-w / 2, -h / 2, w, h);
   c.restore();
 
-  const labelX = labelSide === "left" ? pos.x - 88 : pos.x + 12;
+  const labelX = labelSide === "left" ? pos.x - 87 : pos.x + 12;
   c.textAlign = "left";
   c.textBaseline = "top";
   c.font = "600 14px 'JetBrains Mono', monospace";
   c.fillStyle = COLOR_TEXT_MONO;
-  c.fillText(`Spd: ${speed.toFixed(2)}`, labelX, pos.y - 13);
-  c.fillText(`Ang: ${(((angle % 360) + 360) % 360).toFixed(2)}`, labelX, pos.y + 2);
+  c.fillText(`Spd: ${speed.toFixed(2)}`, labelX, pos.y - 12);
+  c.fillText(`Ang: ${angle.toFixed(2)}`, labelX, pos.y + 2);
 }
 
 function drawWheelView(c) {
@@ -842,7 +842,6 @@ function drawWheelView(c) {
   drawWheel(c, wp.fr, fr_speed, fr_angle, "right");
   drawWheel(c, wp.rl, rl_speed, rl_angle, "left");
   drawWheel(c, wp.rr, rr_speed, rr_angle, "right");
-  // note: not working, sub_esc is wrong ????
 }
 
 // =====================================================================
@@ -887,7 +886,7 @@ function tick() {
   let anglebot = clamp(botslider_frac * BOT_MAX_MOTOR, -BOT_MAX_MOTOR, BOT_MAX_MOTOR);
 
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ x_speed, y_speed, z, angletop, anglebot }));
+    ws.send(JSON.stringify({ x_speed, y_speed, z, current_top, current_bot }));
   }
 
   draw_ui1(x_speed, y_speed, z, current_top, current_bot);
@@ -927,9 +926,6 @@ function draw_ui1(x_speed, y_speed, z, current_top, current_bot) {
   const knobX1 = ui1_joystick_center.x + knob_norm_x * (ui1_joystick_radius - 10);
   const knobY1 = ui1_joystick_center.y + knob_norm_y * (ui1_joystick_radius - 10);
   drawKnob(c, knobX1, knobY1, ui1_knob_radius, dragging);
-
-  blitMono(c, `X Speed: ${formatSpeed(x_speed)}`, 75, 50);
-  blitMono(c, `Y Speed: ${formatSpeed(y_speed)}`, 75, 70);
 
   drawButton(c, ui1_left_button_center.x, ui1_left_button_center.y, turn_left, "⟲");
   drawButton(c, ui1_right_button_center.x, ui1_right_button_center.y, turn_right, "⟳");
