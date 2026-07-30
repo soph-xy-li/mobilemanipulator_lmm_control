@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<!--
+  Robot Arm + Chassis Control Page  (dual-layout + responsive + restyled)
+  --------------------------------------------------------------------
+  Open this file in a browser -- on the same computer as server.py, or on
+  a tablet/phone on the same WiFi. -->
+
+<html lang="en">
+<head>
+<link rel="icon" href="data:,">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Robot Control</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@500;600&display=swap"
+      onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet"></noscript>
+<style>
+  /* ===================================================================
+     colors
+     =================================================================== */
+  :root {
+    --bg: #101216;            /* page background */
+    --panel: #1a1d24;         /* cards / bars */
+    --panel-alt: #20242c;     /* inputs, recessed surfaces */
+    --border: #2a2f3a;        /* hairline borders */
+    --text: #e8eaed;          /* primary text */
+    --text-dim: #8b93a1;      /* secondary/muted text */
+    --accent: #3b82f6;        /* primary blue */
+    --accent-bright: #5b9cff;
+    --accent-dim: #2360d6;
+    --danger: #e5484d;
+    --warning: #f59e0b;
+    --success: #22c55e;
+    --canvas-bg: #1c1f26;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    height: 100%;
+  }
+
+  .app {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 14px 14px calc(80px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ---- top bar: ---- */
+  .top { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+
+  input#url {
+    flex: 1 1 200px;
+    padding: 8px 12px;
+    font: 500 13px/1.2 'JetBrains Mono', 'Courier New', monospace;
+    background: var(--panel-alt); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    outline: none;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  input#url:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  }
+
+
+  .btn {
+    padding: 10px 16px;
+    font: 700 12px/1 'Inter', sans-serif;
+    letter-spacing: .03em; text-transform: uppercase;
+    border: none; border-radius: 8px; color: rgb(225, 225, 225); cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,.35), inset 0 1px 0 rgba(225,225,225,.15);
+    transition: transform .08s ease, filter .15s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: translateY(1px); filter: brightness(.88); }
+
+  #connectBtn { background: linear-gradient(180deg, var(--accent-bright), var(--accent-dim)); }
+  #connectBtn.connected { background: linear-gradient(180deg, #f0555a, var(--danger)); }
+
+  #resetBtn { background: linear-gradient(180deg, #ffc069, var(--warning)); color: #241a04; }
+
+  #runSeqBtn { background: linear-gradient(180deg, #4ade80, var(--success)); color: #06210f; }
+  #runSeqBtn:disabled {
+    background: var(--panel-alt); color: var(--text-dim);
+    box-shadow: none; cursor: default;
+  }
+  #runSeqBtn:disabled:active { transform: none; filter: none; }
+
+  #status {
+    font: 600 11px 'Inter', sans-serif; letter-spacing: .04em; text-transform: uppercase;
+    padding: 7px 10px; border-radius: 20px;
+    background: var(--panel-alt); color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  #status.on { background: rgba(34,197,94,.15); color: #4ade80; border-color: rgba(34,197,94,.4); }
+
+  /* ---- responsive canvas i think ---- */
+  .canvas-wrap {
+    width: 100%;
+    max-width: 775px;
+    margin: 0 auto;
+    aspect-ratio: 775 / 300; /* originally 775/360 */
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4), inset 0 0 0 1px var(--border);
+  }
+  canvas#ui1, canvas#ui2, canvas#ui3 {
+    width: 100%; height: 100%; display: block;
+    background: var(--canvas-bg);
+    touch-action: none;
+  }
+
+  #log {
+    font: 500 11px/1.5 'JetBrains Mono', monospace; color: var(--text-dim);
+    height: 60px; overflow-y: auto;
+    background: #0c0e11; padding: 8px 10px; border-radius: 8px; margin-top: 12px;
+    border: 1px solid var(--border);
+    max-width: 775px; margin-left: auto; margin-right: auto;
+  }
+
+  /* ---- tab panels ---- */
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ---- bottom tab bar ---- */
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 100;
+  }
+  .tab-btn {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: none; border: none; cursor: pointer;
+    padding: 10px 4px 10px;
+    color: var(--text-dim);
+    font: 600 11px/1.2 'Inter', sans-serif; letter-spacing: .02em; text-transform: uppercase;
+    border-top: 2px solid transparent;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .tab-btn.active { color: var(--accent-bright); border-top-color: var(--accent); }
+  .tab-btn:active { opacity: .7; }
+</style>
+</head>
+<body>
+
+  <div class="app">
+
+    <div class="top">
+      <input id="url" value="ws://192.168.1.245:8765"> <!--192.168.0.103-->
+      <button id="connectBtn" class="btn" onclick="toggleConnect()">Connect</button>
+      <button id="resetBtn" class="btn" onclick="resetChassis()">Set Base to 0</button>
+      <button id="runSeqBtn" class="btn" onclick="runSequence()">Run Sequence</button>
+      <span id="status">off</span>
+    </div>
+
+    <!-- ============================================================
+         TAB 1 / "ui1"
+         ============================================================ -->
+    <div class="tab-panel active" id="tab-1">
+      <div class="canvas-wrap">
+        <canvas id="ui1" width="775" height="300"></canvas>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         TAB 2 / "ui2"
+         ============================================================ -->
+    <div class="tab-panel" id="tab-2">
+      <div class="canvas-wrap">
+        <canvas id="ui2" width="775" height="300"></canvas>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         TAB 3: reverse kinematics? 5 sliders and pick position in top down view i dunno yet
+         ============================================================ -->
+    <div class="tab-panel" id="tab-3">
+      <div class="canvas-wrap">
+        <canvas id="ui3" width="775" height="300"></canvas>
+      </div>
+    </div>
+
+    <div id="log">Ready. Tap Connect to start.</div>
+
+  </div>
+
+  <nav class="tabbar">
+    <button class="tab-btn active" id="tabbtn-1" onclick="switchTab(1)">Layout 1</button>
+    <button class="tab-btn" id="tabbtn-2" onclick="switchTab(2)">Layout 2</button>
+    <button class="tab-btn" id="tabbtn-3" onclick="switchTab(3)">Layout 3 (WORK IN PROGRESS)</button>
+  </nav>
+
+<script>
+// =====================================================================
+// tab switching
+// =====================================================================
+let currentTab = 1;
+
+function switchTab(n) {
+  currentTab = n;
+  for (let i = 1; i <= 3; i++) {
+    document.getElementById(`tab-${i}`).classList.toggle("active", i === n);
+    document.getElementById(`tabbtn-${i}`).classList.toggle("active", i === n);
+  }
+
+  if (n === 1) resizeUi1Canvas();
+  if (n === 2) resizeUi2Canvas();
+}
+
+// =====================================================================
+// 1. Config -- mirrors the constants at the top of the pygame script
+// =====================================================================
+const MAX_SPEED = 1;
+const TURN_SPEED = 60;
+const TOP_MAX_MOTOR = Math.PI;
+const BOT_MAX_MOTOR = 2.772373540856032;
+
+const BUTTON_COLOR = "#2360d6";
+const BUTTON_PRESSED_COLOR = "#5b9cff";
+
+const FONT_LABEL    = "700 18px 'Inter', -apple-system, sans-serif";
+const FONT_LABEL_LG = "700 18px 'Inter', -apple-system, sans-serif";
+const FONT_MONO     = "600 15px 'JetBrains Mono', 'Courier New', monospace";
+const COLOR_TEXT    = "#e1e1e1";
+const COLOR_TEXT_MONO = "#9fd3ff";
+
+const SCREEN_W = 775, SCREEN_H = 300; // shared logical size for BOTH canvases
+
+// =====================================================================
+// layout stuff
+// =====================================================================
+//const button_radius = 22.5
+
+// ---- ui1: ----
+const ui1_wheelview_center = { x: 387, y: 95 };
+const ui1_wheel_body_w = 70, ui1_wheel_body_h = 118;
+
+const ui1_arm_base = { x: 650, y: 155 };
+
+const ui1_joystick_center = { x: 145, y: 215 };
+const ui1_joystick_radius = 70;
+const ui1_knob_radius = 23;
+
+const ui1_left_button_center = { x: 40, y: 265 };
+const ui1_right_button_center = { x: 250, y: 265 };
+const ui1_button_radius = 22.5;
+
+const ui1_topslider_center = { x: 650, y: 215 };
+const ui1_botslider_center = { x: 650, y: 270 };
+const ui1_slider_length = 160;
+const ui1_slider_knob_radius = 15;
+
+// ---- ui2: ----
+const ui2_topslider_center = { x: 660, y: 215 };
+const ui2_botslider_center = { x: 660, y: 270 };
+const ui2_slider_length = 160;
+const ui2_slider_knob_radius = 15;
+
+const ui2_wheel_body_w = 45, ui2_wheel_body_h = 70;
+
+const ui2_arm_base = { x: 660, y: 155 };
+
+const ui2_joystick_center = { x: 90, y: 220 };
+const ui2_joystick_radius = 65;
+const ui2_knob_radius = 20;
+
+const ui2_right_button_center = { x: 217, y: 225 };
+const ui2_left_button_center = { x: 182, y: 265 };
+const ui2_button_radius = 22.5;
+
+
+const LOCATION_VIEW_SIZE = 240;
+const LOCATION_VIEW_RANGE = 0.5;
+const LOCATION_PX_PER_M = LOCATION_VIEW_SIZE / (LOCATION_VIEW_RANGE * 2);
+
+
+const layout1 = {
+  joystick_center: ui1_joystick_center, joystick_radius: ui1_joystick_radius,
+  topslider_center: ui1_topslider_center, botslider_center: ui1_botslider_center,
+  slider_length: ui1_slider_length, slider_knob_radius: ui1_slider_knob_radius,
+  left_button_center: ui1_left_button_center, right_button_center: ui1_right_button_center,
+  button_radius: ui1_button_radius,
+};
+const layout2 = {
+  joystick_center: ui2_joystick_center, joystick_radius: ui2_joystick_radius,
+  topslider_center: ui2_topslider_center, botslider_center: ui2_botslider_center,
+  slider_length: ui2_slider_length, slider_knob_radius: ui2_slider_knob_radius,
+  left_button_center: ui2_left_button_center, right_button_center: ui2_right_button_center,
+  button_radius: ui2_button_radius,
+};
+
+
+// =====================================================================
+// works on either layout
+// =====================================================================
+let dragging = false;
+let knob_norm_x = 0, knob_norm_y = 0;
+
+let topslider_frac = 0, botslider_frac = 0;
+let topslider_dragging = false;
+let botslider_dragging = false;
+let mouse_topslider_dragging = false;
+let mouse_botslider_dragging = false;
+
+let turn_left = false, turn_right = false;
+let turn_left_cont = false, turn_right_cont = false;
+let gamepadPresent = false;
+
+let mousex = 0, mousey = 0;
+
+let touch_joystick = null, touch_topslider = null, touch_botslider = null;
+let touch_left = null, touch_right = null;
+
+// ---- readings ----
+let current_top = 0.0, current_bot = 0.0;
+let chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
+
+let fl_speed = 0, fr_speed = 0, rl_speed = 0, rr_speed = 0;
+let fl_angle = 0, fr_angle = 0, rl_angle = 0, rr_angle = 0;
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function getCanvasPos(canvasEl, clientX, clientY) {
+  const rect = canvasEl.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) * (SCREEN_W / rect.width),
+    y: (clientY - rect.top) * (SCREEN_H / rect.height),
+  };
+}
+
+// =====================================================================
+// should resize canvas
+// =====================================================================
+const ui1Canvas = document.getElementById("ui1");
+const ui1Ctx = ui1Canvas.getContext("2d");
+const ui2Canvas = document.getElementById("ui2");
+const ui2Ctx = ui2Canvas.getContext("2d");
+
+function fitCanvasToBox(canvasEl, ctxEl) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvasEl.clientWidth;
+  const cssHeight = canvasEl.clientHeight;
+  if (cssWidth === 0 || cssHeight === 0) return;
+
+  canvasEl.width = Math.round(cssWidth * dpr);
+  canvasEl.height = Math.round(cssHeight * dpr);
+
+  const scale = (cssWidth / SCREEN_W) * dpr;
+  ctxEl.setTransform(scale, 0, 0, scale, 0, 0);
+}
+function resizeUi1Canvas() { fitCanvasToBox(ui1Canvas, ui1Ctx); }
+function resizeUi2Canvas() { fitCanvasToBox(ui2Canvas, ui2Ctx); }
+
+window.addEventListener("resize", () => { resizeUi1Canvas(); resizeUi2Canvas(); });
+window.addEventListener("orientationchange", () => { resizeUi1Canvas(); resizeUi2Canvas(); });
+window.addEventListener("load", () => { resizeUi1Canvas(); resizeUi2Canvas(); });
+resizeUi1Canvas();
+resizeUi2Canvas();
+
+// =====================================================================
+// connection bar
+// =====================================================================
+const log = (m) => {
+  const el = document.getElementById("log");
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `[${t}] ${m}<br>`;
+  el.scrollTop = el.scrollHeight;
+};
+
+function setStatus(on) {
+  const s = document.getElementById("status");
+  const b = document.getElementById("connectBtn");
+  if (on) {
+    s.textContent = "connected"; s.classList.add("on");
+    b.textContent = "Disconnect"; b.classList.add("connected");
+  } else {
+    s.textContent = "off"; s.classList.remove("on");
+    b.textContent = "Connect"; b.classList.remove("connected");
+  }
+}
+
+let ws = null; // websocket
+
+function toggleConnect() {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.close(); return; }
+  connect();
+}
+
+function resetChassis() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log("not connected");
+    return;
+  }
+  ws.send(JSON.stringify({ type: "reset_chassis" }));
+  log("chassis reset requested");
+}
+
+function runSequence() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log("not connected");
+    return;
+  }
+  ws.send(JSON.stringify({ type: "run_sequence" }));
+  log("sequence run requested");
+}
+
+function connect() {
+  const url = document.getElementById("url").value.trim();
+  log("connecting to " + url);
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    log("error: " + e.message);
+    return;
+  }
+
+  ws.onopen = () => { setStatus(true); log("connected"); };
+  ws.onclose = () => { setStatus(false); log("closed"); };
+  ws.onerror = () => { log("error (check address / server running?)"); };
+
+  ws.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      if (data.type === "hello") log("< " + data.msg);
+      if (data.current_top !== undefined) current_top = data.current_top;
+      if (data.current_bot !== undefined) current_bot = data.current_bot;
+      if (data.chassis_x !== undefined) chassis_x = data.chassis_x;
+      if (data.chassis_y !== undefined) chassis_y = data.chassis_y;
+      if (data.chassis_z !== undefined) chassis_z = data.chassis_z;
+      if (data.esc) {
+        fl_speed = data.esc.speed.fl; fr_speed = data.esc.speed.fr;
+        rl_speed = data.esc.speed.rl; rr_speed = data.esc.speed.rr;
+        fl_angle = data.esc.angle.fl; fr_angle = data.esc.angle.fr;
+        rl_angle = data.esc.angle.rl; rr_angle = data.esc.angle.rr;
+      }
+
+      if (data.type === "sequence_status") {
+        const btn = document.getElementById("runSeqBtn");
+        if (data.status === "started") {
+          log("sequence started" + (data.csv_path ? ` (${data.csv_path})` : ""));
+          btn.disabled = true;
+          btn.textContent = "Running…";
+        } else if (data.status === "busy") {
+          log("sequence already running");
+        } else if (data.status === "finished") {
+          log("sequence finished");
+          btn.disabled = false;
+          btn.textContent = "Run Sequence";
+        }
+      }
+
+    } catch (e) {
+    }
+  };
+}
+
+// =====================================================================
+// boring stuff for pointer and touch
+// =====================================================================
+function handleFingerDown(x, y, id, layout) {
+  const topKnobX = layout.topslider_center.x - layout.slider_length / 2 + topslider_frac * layout.slider_length;
+  const botKnobX = layout.botslider_center.x - layout.slider_length / 2 + botslider_frac * layout.slider_length;
+
+  const dist = Math.hypot(x - layout.joystick_center.x, y - layout.joystick_center.y);
+  const distRight = Math.hypot(x - layout.right_button_center.x, y - layout.right_button_center.y);
+  const distLeft = Math.hypot(x - layout.left_button_center.x, y - layout.left_button_center.y);
+  const distTop = Math.hypot(x - topKnobX, y - layout.topslider_center.y);
+  const distBot = Math.hypot(x - botKnobX, y - layout.botslider_center.y);
+
+  if (dist <= layout.joystick_radius && touch_joystick === null) {
+    touch_joystick = id;
+    dragging = true;
+  } else if (distTop <= layout.slider_knob_radius && touch_topslider === null) {
+    touch_topslider = id;
+    topslider_dragging = true;
+  } else if (distBot <= layout.slider_knob_radius && touch_botslider === null) {
+    touch_botslider = id;
+    botslider_dragging = true;
+  } else if (distLeft <= layout.button_radius && touch_left === null) {
+    touch_left = id;
+    turn_left = true;
+  } else if (distRight <= layout.button_radius && touch_right === null) {
+    touch_right = id;
+    turn_right = true;
+  }
+}
+
+function handleFingerMove(x, y, id, layout) {
+  if (id === touch_joystick) {
+    mousex = x;
+    mousey = y;
+  } else if (id === touch_topslider) {
+    topslider_frac = clamp((x - (layout.topslider_center.x - layout.slider_length / 2)) / layout.slider_length, 0, 1);
+  } else if (id === touch_botslider) {
+    botslider_frac = clamp((x - (layout.botslider_center.x - layout.slider_length / 2)) / layout.slider_length, 0, 1);
+  }
+}
+
+function handleFingerUp(id) {
+  if (id === touch_joystick) {
+    touch_joystick = null;
+    dragging = false;
+  } else if (id === touch_topslider) {
+    touch_topslider = null;
+    topslider_dragging = false;
+  } else if (id === touch_botslider) {
+    touch_botslider = null;
+    botslider_dragging = false;
+  } else if (id === touch_left) {
+    touch_left = null;
+    turn_left = false;
+  } else if (id === touch_right) {
+    touch_right = null;
+    turn_right = false;
+  }
+}
+
+function attachControlHandlers(canvasEl, layout) {
+  canvasEl.addEventListener("mousemove", (e) => {
+    const p = getCanvasPos(canvasEl, e.clientX, e.clientY);
+    mousex = p.x;
+    mousey = p.y;
+  });
+
+  canvasEl.addEventListener("mousedown", (e) => {
+    const p = getCanvasPos(canvasEl, e.clientX, e.clientY);
+    const topKnobX = layout.topslider_center.x - layout.slider_length / 2 + topslider_frac * layout.slider_length;
+    const botKnobX = layout.botslider_center.x - layout.slider_length / 2 + botslider_frac * layout.slider_length;
+
+    const dist = Math.hypot(p.x - layout.joystick_center.x, p.y - layout.joystick_center.y);
+    const distRight = Math.hypot(p.x - layout.right_button_center.x, p.y - layout.right_button_center.y);
+    const distLeft = Math.hypot(p.x - layout.left_button_center.x, p.y - layout.left_button_center.y);
+    const distTop = Math.hypot(p.x - topKnobX, p.y - layout.topslider_center.y);
+    const distBot = Math.hypot(p.x - botKnobX, p.y - layout.botslider_center.y);
+
+    if (distTop <= layout.slider_knob_radius) { topslider_dragging = true; mouse_topslider_dragging = true; }
+    if (distBot <= layout.slider_knob_radius) { botslider_dragging = true; mouse_botslider_dragging = true; }
+    if (dist <= layout.joystick_radius) dragging = true;
+    if (distRight <= layout.button_radius) turn_right = true;
+    if (distLeft <= layout.button_radius) turn_left = true;
+  });
+
+  canvasEl.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      const p = getCanvasPos(canvasEl, t.clientX, t.clientY);
+      handleFingerDown(p.x, p.y, t.identifier, layout);
+    }
+  }, { passive: false });
+
+  canvasEl.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      const p = getCanvasPos(canvasEl, t.clientX, t.clientY);
+      handleFingerMove(p.x, p.y, t.identifier, layout);
+    }
+  }, { passive: false });
+
+  function touchEndHandler(e) {
+    e.preventDefault();
+    for (const t of e.changedTouches) handleFingerUp(t.identifier);
+  }
+  canvasEl.addEventListener("touchend", touchEndHandler, { passive: false });
+  canvasEl.addEventListener("touchcancel", touchEndHandler, { passive: false });
+}
+
+attachControlHandlers(ui1Canvas, layout1);
+attachControlHandlers(ui2Canvas, layout2);
+
+// listen on window (not canvas)
+window.addEventListener("mouseup", () => {
+  dragging = false;
+  turn_left = false;
+  turn_right = false;
+  topslider_dragging = false;
+  botslider_dragging = false;
+  mouse_topslider_dragging = false;
+  mouse_botslider_dragging = false;
+});
+
+// =====================================================================
+// chud obsolete gamepad
+// =====================================================================
+function pollGamepad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads[0];
+  gamepadPresent = !!gp;
+  if (!gp) return;
+
+  const deadzone = 0.1;
+  let lx = gp.axes[0] || 0;
+  let ly = gp.axes[1] || 0;
+  if (Math.abs(lx) < deadzone) lx = 0;
+  if (Math.abs(ly) < deadzone) ly = 0;
+
+  knob_norm_x = lx;
+  knob_norm_y = ly;
+  dragging = true;
+
+  const square = gp.buttons[2] && gp.buttons[2].pressed;
+  const circle = gp.buttons[1] && gp.buttons[1].pressed;
+  turn_left_cont = !!square;
+  turn_right_cont = !!circle;
+
+  // top slider: L1 nudges it up in fixed steps; L2 (analog trigger)
+  // pulls it down proportionally to how far it's pressed -- same
+  // two-speed feel as the pygame version. Step sizes match the
+  // original pixel-based steps (10px / 5px out of a 160px track),
+  // just expressed as fractions of the track now.
+  const l1 = gp.buttons[4] && gp.buttons[4].pressed;
+  const l2 = gp.buttons[6] ? gp.buttons[6].value : 0;
+  if (l1) topslider_frac = clamp(topslider_frac + 0.0625, 0, 1);
+  if (l2 > 0.1) topslider_frac = clamp(topslider_frac - l2 * 0.0625, 0, 1);
+
+  // bottom slider: R1 / R2, same pattern (half the step size, matching
+  // the original 5px/160px steps).
+  const r1 = gp.buttons[5] && gp.buttons[5].pressed;
+  const r2 = gp.buttons[7] ? gp.buttons[7].value : 0;
+  if (r1) botslider_frac = clamp(botslider_frac + 0.03125, 0, 1);
+  if (r2 > 0.1) botslider_frac = clamp(botslider_frac - r2 * 0.03125, 0, 1);
+}
+
+// =====================================================================
+// drawing functions
+// =====================================================================
+function fillCircle(c, x, y, r, color) {
+  c.beginPath();
+  c.arc(x, y, r, 0, Math.PI * 2);
+  c.fillStyle = color;
+  c.fill();
+}
+
+function glossGradient(c, cx, cy, radius, baseColor, brightColor) {
+  const g = c.createRadialGradient(cx - radius * 0.35, cy - radius * 0.4, radius * 0.15, cx, cy, radius);
+  g.addColorStop(0, brightColor);
+  g.addColorStop(1, baseColor);
+  return g;
+}
+
+function drawButton(c, cx, cy, pressed, label) {
+  const radius = 22.5;
+  const offset = pressed ? 2 : 0;
+  fillCircle(c, cx, cy + 4, radius, "rgba(0,0,0,0.4)");
+  const fill = pressed
+    ? glossGradient(c, cx, cy + offset, radius, "#2E6FE6", "#7BB0FF")
+    : glossGradient(c, cx, cy + offset, radius, "#2360D6", "#5B9CFF");
+  fillCircle(c, cx, cy + offset, radius, fill);
+  c.lineWidth = 1.5;
+  c.strokeStyle = pressed ? "rgba(225,225,225,0.45)" : "rgba(225,225,225,0.2)";
+  c.beginPath(); c.arc(cx, cy + offset, radius, 0, Math.PI * 2); c.stroke();
+  c.fillStyle = "#e1e1e1";
+  c.font = FONT_LABEL_LG;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillText(label, cx, cy + offset);
+}
+
+function drawKnob(c, x, y, radius, pressed) {
+  const offset = pressed ? 2 : 0;
+  fillCircle(c, x, y + 3, radius, "rgba(0,0,0,0.4)");
+  const fill = pressed
+    ? glossGradient(c, x, y + offset, radius, "#2E6FE6", "#7BB0FF")
+    : glossGradient(c, x, y + offset, radius, "#2360D6", "#5B9CFF");
+  fillCircle(c, x, y + offset, radius, fill);
+  c.lineWidth = 2;
+  c.strokeStyle = pressed ? "rgba(225,225,225,0.45)" : "rgba(225,225,225,0.2)";
+  c.beginPath(); c.arc(x, y + offset, radius, 0, Math.PI * 2); c.stroke();
+}
+
+function drawSliderTrack(c, cx, cy, length, knobX) {
+    const left = cx - length / 2;
+    const right = cx + length / 2;
+    c.lineCap = "round";
+
+    c.strokeStyle = "rgba(0,0,0,0.4)";
+    c.lineWidth = 30;
+    c.beginPath(); c.moveTo(left, cy + 3); c.lineTo(right, cy + 3); c.stroke();
+
+    c.strokeStyle = "#3a3f4a";
+    c.lineWidth = 30;
+    c.beginPath(); c.moveTo(left, cy); c.lineTo(right, cy); c.stroke();
+
+    c.strokeStyle = "rgba(225,225,225,0.07)";
+    c.lineWidth = 4;
+    c.beginPath(); c.moveTo(left + 10, cy - 6); c.lineTo(right - 10, cy - 6); c.stroke();
+
+    const grad = c.createLinearGradient(left, cy, right, cy);
+    grad.addColorStop(0, "#2360D6");
+    grad.addColorStop(1, "#5B9CFF");
+    c.strokeStyle = grad;
+    c.lineWidth = 18;
+    c.beginPath(); c.moveTo(left, cy); c.lineTo(knobX, cy); c.stroke();
+}
+
+function rotateVec(x, y, angleRad) {
+  const cs = Math.cos(angleRad), sn = Math.sin(angleRad);
+  return { x: x * cs - y * sn, y: x * sn + y * cs };
+}
+
+function armPosition(anglebot, angletop) {
+    const L1 = 15; // cm
+    const L2 = 27; // cm
+    const topoffset = -2.556839856565194;
+    const botoffset = -1.0271229114213778;
+    const theta1 = anglebot + botoffset;
+    const theta2 = - angletop + anglebot + botoffset - topoffset;
+    const x = L1 * Math.sin(theta1) + L2 * Math.sin(theta2);
+    const y = L1 * Math.cos(theta1) + L2 * Math.cos(theta2);
+    return { x, y };
+}
+
+function drawArm(c, baseX, baseY, angle2top, angle1bot) {
+  const armbot = 40, armtop = 70, armwidth = 24;
+  const topoffset = -2.556839856565194;
+  const botoffset = -1.0271229114213778;
+
+  const dir1 = rotateVec(0, -armbot, angle1bot + botoffset);
+  const jointX = baseX + dir1.x, jointY = baseY + dir1.y;
+  const dir1len = Math.hypot(dir1.x, dir1.y) || 1;
+  const perp1raw = rotateVec(dir1.x / dir1len, dir1.y / dir1len, Math.PI / 2);
+  const perp1 = { x: perp1raw.x * (armwidth / 2), y: perp1raw.y * (armwidth / 2) };
+
+  c.beginPath();
+  c.moveTo(baseX + perp1.x, baseY + perp1.y);
+  c.lineTo(baseX - perp1.x, baseY - perp1.y);
+  c.lineTo(jointX - perp1.x, jointY - perp1.y);
+  c.lineTo(jointX + perp1.x, jointY + perp1.y);
+  c.closePath();
+  c.fillStyle = BUTTON_COLOR;
+  c.fill();
+
+  const totalAngle = angle1bot - angle2top + botoffset - topoffset;
+  const dir2 = rotateVec(0, -armtop, totalAngle);
+  const endX = jointX + dir2.x, endY = jointY + dir2.y;
+  const dir2len = Math.hypot(dir2.x, dir2.y) || 1;
+  const perp2raw = rotateVec(dir2.x / dir2len, dir2.y / dir2len, Math.PI / 2);
+  const perp2 = { x: perp2raw.x * (armwidth / 2), y: perp2raw.y * (armwidth / 2) };
+
+  c.beginPath();
+  c.moveTo(jointX + perp2.x, jointY + perp2.y);
+  c.lineTo(jointX - perp2.x, jointY - perp2.y);
+  c.lineTo(endX - perp2.x, endY - perp2.y);
+  c.lineTo(endX + perp2.x, endY + perp2.y);
+  c.closePath();
+  c.fillStyle = BUTTON_PRESSED_COLOR;
+  c.fill();
+
+  fillCircle(c, baseX, baseY, armwidth/2, "rgb(225,225,225)");
+  fillCircle(c, jointX, jointY, armwidth/2, "rgb(225,225,225)");
+  fillCircle(c, endX, endY, armwidth/2, "rgb(225,225,225)");
+  fillCircle(c, baseX, baseY, armwidth/2 - 2, "rgb(100,100,100)");
+  fillCircle(c, jointX, jointY, armwidth/2 - 2, "rgb(100,100,100)");
+  fillCircle(c, endX, endY, armwidth/2 - 2, "rgb(100,100,100)");
+
+  blitText(c, "Arm Model", baseX - 50, Math.min(endY - 40, baseY - 120));
+}
+
+// anchored at top-left (chud pygame artifact)
+function blitText(c, text, x, y, color = COLOR_TEXT, font = FONT_LABEL) {
+  c.textAlign = "left";
+  c.textBaseline = "top";
+  c.fillStyle = color;
+  c.font = font;
+  c.fillText(text, x, y);
+}
+
+// the cool text
+function blitMono(c, text, x, y, color = COLOR_TEXT_MONO) {
+  blitText(c, text, x, y, color, FONT_MONO);
+}
+
+function formatSpeed(value) {
+  return (Math.abs(value) < 0.005 ? 0 : value).toFixed(2);
+}
+
+// ---- ui1-only: top-down wheel view ----
+
+// thing for wheel base
+function fillRoundRect(c, x, y, w, h, r, color) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+  c.fillStyle = color;
+  c.fill();
+}
+
+function drawWheelShape(c, x, y, w, h) {
+  c.save();
+  c.translate(x, y);
+  fillRoundRect(c, -w/2-1, -h/2-1, w+2, h+2, 4, "rgba(200,200,200,1)");
+  fillRoundRect(c, -w / 2, -h / 2, w, h, 4, "#3a3f4a");
+  c.strokeStyle = "rgba(225,225,225,0.25)";
+  c.lineWidth = 1;
+  c.restore();
+}
+
+// wheels (need to check angles in rad/deg)
+function drawWheel(c, pos, speed, angle, labelSide) {
+  drawWheelShape(c, pos.x, pos.y, 18, 30);
+
+  const labelX = labelSide === "left" ? pos.x - 88 : pos.x + 13;
+  c.textAlign = "left";
+  c.textBaseline = "top";
+  c.font = "600 14px 'JetBrains Mono', monospace";
+  c.fillStyle = COLOR_TEXT_MONO;
+  c.fillText(`Spd: ${speed.toFixed(1)}`, labelX, pos.y - 7);
+  //c.fillText(`Ang: ${(((angle % 360) + 360) % 360).toFixed(2)}˚`, labelX, pos.y + 2); // jumps around too much to be accurate
+}
+
+function drawWheelView(c) {
+  const cx = ui1_wheelview_center.x, cy = ui1_wheelview_center.y;
+  const bw = ui1_wheel_body_w, bh = ui1_wheel_body_h;
+  const bx = cx - bw / 2, by = cy - bh / 2;
+
+  fillRoundRect(c, bx, by, bw, bh, 12, glossGradient(c, cx, cy, bh / 2, "#2360d6", "#5b9cff"));
+
+  // triangle for front
+  c.beginPath();
+  c.moveTo(cx, by - 3);
+  c.lineTo(cx - 8, by + 12);
+  c.lineTo(cx + 8, by + 12);
+  c.closePath();
+  c.fillStyle = "#e1e1e1";
+  c.fill();
+
+  const wp = {
+    fl: { x: cx - bw / 2, y: cy - bh / 2 + 26 },
+    fr: { x: cx + bw / 2, y: cy - bh / 2 + 26 },
+    rl: { x: cx - bw / 2, y: cy + bh / 2 - 26 },
+    rr: { x: cx + bw / 2, y: cy + bh / 2 - 26 },
+  };
+  drawWheel(c, wp.fl, fl_speed, fl_angle, "left");
+  drawWheel(c, wp.fr, fr_speed, fr_angle, "right");
+  drawWheel(c, wp.rl, rl_speed, rl_angle, "left");
+  drawWheel(c, wp.rr, rr_speed, rr_angle, "right");
+}
+
+function drawLocationView(c, screenCenter, chassisX, chassisY, chassisZ) {
+  const boxLeft = screenCenter.x - LOCATION_VIEW_SIZE / 2;
+  const boxTop = screenCenter.y - LOCATION_VIEW_SIZE / 2;
+
+  // background + border for the map area
+  c.fillStyle = "#1c1f26";
+  c.fillRect(boxLeft, boxTop, LOCATION_VIEW_SIZE, LOCATION_VIEW_SIZE);
+  c.strokeStyle = "rgba(225,225,225,0.2)";
+  c.lineWidth = 2;
+  c.strokeRect(boxLeft, boxTop, LOCATION_VIEW_SIZE, LOCATION_VIEW_SIZE);
+
+  c.strokeStyle = "rgba(225,225,225,0.06)";
+  c.lineWidth = 1;
+  for (let m = -LOCATION_VIEW_RANGE; m <= LOCATION_VIEW_RANGE; m += 0.5) {
+    const gx = screenCenter.x + m * LOCATION_PX_PER_M;
+    const gy = screenCenter.y - m * LOCATION_PX_PER_M;
+    c.beginPath(); c.moveTo(gx, boxTop); c.lineTo(gx, boxTop + LOCATION_VIEW_SIZE); c.stroke();
+    c.beginPath(); c.moveTo(boxLeft, gy); c.lineTo(boxLeft + LOCATION_VIEW_SIZE, gy); c.stroke();
+  }
+
+  c.strokeStyle = "rgba(225,225,225,0.25)";
+  c.beginPath(); c.moveTo(screenCenter.x - 6, screenCenter.y); c.lineTo(screenCenter.x + 6, screenCenter.y); c.stroke();
+  c.beginPath(); c.moveTo(screenCenter.x, screenCenter.y - 6); c.lineTo(screenCenter.x, screenCenter.y + 6); c.stroke();
+
+  // clamped chassis position?
+  //const dotX = clamp(screenCenter.x + chassisY * LOCATION_PX_PER_M, boxLeft, boxLeft + LOCATION_VIEW_SIZE);
+  //const dotY = clamp(screenCenter.y - chassisX * LOCATION_PX_PER_M, boxTop, boxTop + LOCATION_VIEW_SIZE);
+  const dotX = screenCenter.x + chassisY * LOCATION_PX_PER_M;
+  const dotY = screenCenter.y - chassisX * LOCATION_PX_PER_M;
+  const headingRad = chassisZ * Math.PI / 180;
+
+  // approx. radius
+  const chassisRadius = Math.max(ui2_wheel_body_w, ui2_wheel_body_h) / 2;
+  const outOfBounds =
+  dotX - chassisRadius < boxLeft ||
+  dotX + chassisRadius > boxLeft + LOCATION_VIEW_SIZE ||
+  dotY - chassisRadius < boxTop ||
+  dotY + chassisRadius > boxTop + LOCATION_VIEW_SIZE;
+
+  c.save();
+  c.beginPath();
+  c.rect(boxLeft, boxTop, LOCATION_VIEW_SIZE, LOCATION_VIEW_SIZE);
+  c.clip();
+
+  c.translate(dotX, dotY);
+  c.rotate(headingRad);
+
+  const bw = ui2_wheel_body_w, bh = ui2_wheel_body_h;
+  const w = 12, h = 18;
+  fillRoundRect(c, -bw / 2, -bh / 2, bw, bh, 12, glossGradient(c, 0, 0, bh / 2, "#2360d6", "#5b9cff"));
+  c.strokeStyle = "rgba(225,225,225,0.2)";
+  c.lineWidth = 2;
+
+  drawWheelShape(c, -bw / 2, -bh / 2 + 18, w, h);
+  drawWheelShape(c, bw / 2, -bh / 2 + 18, w, h);
+  drawWheelShape(c, -bw / 2, bh / 2 - 18, w, h);
+  drawWheelShape(c, bw / 2, bh / 2 - 18, w, h);
+
+  c.beginPath();
+  c.moveTo(0, -bh / 2 - 3);
+  c.lineTo(-8, -bh / 2 + 12);
+  c.lineTo(8, -bh / 2 + 12);
+  c.closePath();
+  c.fillStyle = "white";
+  c.fill();
+
+  c.restore();
+
+  if (outOfBounds) {
+  blitMono(c, `Out of bounds!`, boxLeft+LOCATION_VIEW_SIZE/4, boxTop - 18)}
+
+  // numeric readout under the map
+  blitMono(c, `x: ${chassisX.toFixed(1)} m  y: ${chassisY.toFixed(1)} m  hd: ${chassisZ.toFixed(1)}°`,
+    boxLeft, boxTop + LOCATION_VIEW_SIZE + 6);
+}
+
+// =====================================================================
+// the big loop
+// =====================================================================
+function tick() {
+  pollGamepad();
+
+  const layout = currentTab === 2 ? layout2 : layout1; // tab 3 not done
+
+  let target_norm_x = 0, target_norm_y = 0;
+
+  if (dragging && !gamepadPresent) {
+    let dx = mousex - layout.joystick_center.x;
+    let dy = mousey - layout.joystick_center.y;
+    const maxR = layout.joystick_radius - 10;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxR) { dx *= maxR / dist; dy *= maxR / dist; }
+    target_norm_x = dx / maxR;
+    target_norm_y = dy / maxR;
+  }
+
+  if (mouse_topslider_dragging) {
+    topslider_frac = clamp((mousex - (layout.topslider_center.x - layout.slider_length / 2)) / layout.slider_length, 0, 1);
+  }
+  if (mouse_botslider_dragging) {
+    botslider_frac = clamp((mousex - (layout.botslider_center.x - layout.slider_length / 2)) / layout.slider_length, 0, 1);
+  }
+
+  let z = 0;
+  if (turn_right || turn_right_cont) z = TURN_SPEED;
+  else if (turn_left || turn_left_cont) z = -TURN_SPEED;
+
+  const smooth = 0.4;
+  knob_norm_x += (target_norm_x - knob_norm_x) * smooth;
+  knob_norm_y += (target_norm_y - knob_norm_y) * smooth;
+
+  const x_speed = -knob_norm_y * MAX_SPEED;
+  const y_speed = knob_norm_x * MAX_SPEED;
+
+  let angletop = clamp(topslider_frac * TOP_MAX_MOTOR, -TOP_MAX_MOTOR, TOP_MAX_MOTOR);
+  let anglebot = clamp(botslider_frac * BOT_MAX_MOTOR, -BOT_MAX_MOTOR, BOT_MAX_MOTOR);
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ x_speed, y_speed, z, angletop, anglebot }));
+  }
+
+  draw_ui1(x_speed, y_speed, z, current_top, current_bot);
+  draw_ui2(x_speed, y_speed, z, current_top, current_bot);
+  //draw_ui3(x_speed, y_speed, z, current_top, current_bot)
+}
+
+// ---- ui1: ----
+function draw_ui1(x_speed, y_speed, z, current_top, current_bot) {
+  const c = ui1Ctx;
+  c.clearRect(0, 0, SCREEN_W, SCREEN_H);
+  c.fillStyle = "#1c1f26";
+  c.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  c.strokeStyle = "rgba(225,225,225,0.035)";
+  c.lineWidth = 1;
+  for (let x = 0; x < SCREEN_W; x += 25) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, SCREEN_H); c.stroke(); }
+  for (let y = 0; y < SCREEN_H; y += 25) { c.beginPath(); c.moveTo(0, y); c.lineTo(SCREEN_W, y); c.stroke(); }
+
+  drawWheelView(c);
+
+  drawArm(c, ui1_arm_base.x, ui1_arm_base.y, current_top, current_bot);
+  blitMono(c, `Top Angle: ${(current_top * 180 / Math.PI).toFixed(1)}°`, 360, 225);
+  blitMono(c, `Bottom Angle: ${(current_bot * 180 / Math.PI).toFixed(1)}°`, 360, 245);
+
+  fillCircle(c, ui1_joystick_center.x, ui1_joystick_center.y + 4, ui1_joystick_radius + 3, "rgba(0,0,0,0.45)");
+  fillCircle(c, ui1_joystick_center.x, ui1_joystick_center.y, ui1_joystick_radius + 4,
+    glossGradient(c, ui1_joystick_center.x, ui1_joystick_center.y, ui1_joystick_radius + 4, "#3a3f4a", "#5a606c"));
+  const wellGrad1 = c.createRadialGradient(ui1_joystick_center.x, ui1_joystick_center.y, ui1_joystick_radius * 0.2,ui1_joystick_center.x, ui1_joystick_center.y, ui1_joystick_radius);
+  wellGrad1.addColorStop(0, "#2c2f36");
+  wellGrad1.addColorStop(1, "#1c1f26");
+  fillCircle(c, ui1_joystick_center.x, ui1_joystick_center.y, ui1_joystick_radius, wellGrad1);
+  blitText(c, "Drive", ui1_joystick_center.x - 24, ui1_joystick_center.y - 102);
+
+  const knobX1 = ui1_joystick_center.x + knob_norm_x * (ui1_joystick_radius - 10);
+  const knobY1 = ui1_joystick_center.y + knob_norm_y * (ui1_joystick_radius - 10);
+  drawKnob(c, knobX1, knobY1, ui1_knob_radius, dragging);
+
+  blitMono(c, `X Speed: ${formatSpeed(x_speed)}`, 75, 50);
+  blitMono(c, `Y Speed: ${formatSpeed(y_speed)}`, 75, 70);
+
+  drawButton(c, ui1_left_button_center.x, ui1_left_button_center.y, turn_left, "⟲");
+  drawButton(c, ui1_right_button_center.x, ui1_right_button_center.y, turn_right, "⟳");
+
+  // ---- bottom-right: arm sliders ----
+  const topKnobX1 = ui1_topslider_center.x - ui1_slider_length / 2 + topslider_frac * ui1_slider_length;
+  drawSliderTrack(c, ui1_topslider_center.x, ui1_topslider_center.y, ui1_slider_length, topKnobX1);
+  drawKnob(c, topKnobX1, ui1_topslider_center.y, ui1_slider_knob_radius, topslider_dragging);
+  blitText(c, "Top Arm", ui1_topslider_center.x - ui1_slider_length / 4, ui1_topslider_center.y - 35);
+
+  const botKnobX1 = ui1_botslider_center.x - ui1_slider_length / 2 + botslider_frac * ui1_slider_length;
+  drawSliderTrack(c, ui1_botslider_center.x, ui1_botslider_center.y, ui1_slider_length, botKnobX1);
+  drawKnob(c, botKnobX1, ui1_botslider_center.y, ui1_slider_knob_radius, botslider_dragging);
+  blitText(c, "Bottom Arm", ui1_botslider_center.x - ui1_slider_length / 3, ui1_botslider_center.y - 35);
+}
+
+// ---- ui2: ---- WORK IN PROGRESS + REMEMBER TO CHANGE ANGLETOP/BOT
+function draw_ui2(x_speed, y_speed, z, angletop, anglebot) {
+  const c = ui2Ctx;
+  c.clearRect(0, 0, SCREEN_W, SCREEN_H);
+  c.fillStyle = "#1c1f26";
+  c.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  c.strokeStyle = "rgba(225,225,225,0.035)";
+  c.lineWidth = 1;
+  for (let x = 0; x < SCREEN_W; x += 25) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, SCREEN_H); c.stroke(); }
+  for (let y = 0; y < SCREEN_H; y += 25) { c.beginPath(); c.moveTo(0, y); c.lineTo(SCREEN_W, y); c.stroke(); }
+
+  drawArm(c, ui2_arm_base.x, ui2_arm_base.y, angletop, anglebot);
+  const arm_pos = armPosition(anglebot, angletop);
+  const heading = chassis_z * Math.PI / 180;
+  const arm_worldx = arm_pos.x * Math.cos(heading) - arm_pos.y * Math.sin(heading);
+  const arm_worldy = arm_pos.x * Math.sin(heading) + arm_pos.y * Math.cos(heading);
+  const world_pos = { x: chassis_x * 100 + arm_worldx, y: chassis_y * 100 + arm_worldy };
+
+  //blitMono(c, "Lacrosse Head Position (x,y,z):", 300, 20);
+  //blitMono(c, `${world_pos.x.toFixed(1)}, ${chassis_y.toFixed(1)}, ${arm_pos.y.toFixed(1)} cm`, 300, 50);
+
+  const topKnobX = ui2_topslider_center.x - ui2_slider_length / 2 + topslider_frac * ui2_slider_length;
+  drawSliderTrack(c, ui2_topslider_center.x, ui2_topslider_center.y, ui2_slider_length, topKnobX);
+  drawKnob(c, topKnobX, ui2_topslider_center.y, ui2_slider_knob_radius, topslider_dragging);
+  blitText(c, "Top Arm", ui2_topslider_center.x - ui2_slider_length / 4, ui2_topslider_center.y - 35);
+
+  const botKnobX = ui2_botslider_center.x - ui2_slider_length / 2 + botslider_frac * ui2_slider_length;
+  drawSliderTrack(c, ui2_botslider_center.x, ui2_botslider_center.y, ui2_slider_length, botKnobX);
+  drawKnob(c, botKnobX, ui2_botslider_center.y, ui2_slider_knob_radius, botslider_dragging);
+  blitText(c, "Bottom Arm", ui2_botslider_center.x - ui2_slider_length / 3, ui2_botslider_center.y - 35);
+
+  blitMono(c, `Top Angle: ${(current_top * 180 / Math.PI).toFixed(1)}°`, 50, 20);
+  blitMono(c, `Bottom Angle: ${(current_bot * 180 / Math.PI).toFixed(1)}°`, 50, 40);
+
+  fillCircle(c, ui2_joystick_center.x, ui2_joystick_center.y + 5, ui2_joystick_radius + 3, "rgba(0,0,0,0.45)");
+  fillCircle(c, ui2_joystick_center.x, ui2_joystick_center.y, ui2_joystick_radius + 5,
+    glossGradient(c, ui2_joystick_center.x, ui2_joystick_center.y, ui2_joystick_radius + 5, "#3a3f4a", "#5a606c"));
+  const wellGrad = c.createRadialGradient(ui2_joystick_center.x, ui2_joystick_center.y, ui2_joystick_radius * 0.2, ui2_joystick_center.x, ui2_joystick_center.y, ui2_joystick_radius);
+  wellGrad.addColorStop(0, "#2c2f36");
+  wellGrad.addColorStop(1, "#1c1f26");
+  fillCircle(c, ui2_joystick_center.x, ui2_joystick_center.y, ui2_joystick_radius, wellGrad);
+  blitText(c, "Drive", ui2_joystick_center.x - 24, ui2_joystick_center.y - 95);
+
+  const knobX2 = ui2_joystick_center.x + knob_norm_x * (ui2_joystick_radius - 10);
+  const knobY2 = ui2_joystick_center.y + knob_norm_y * (ui2_joystick_radius - 10);
+  drawKnob(c, knobX2, knobY2, ui2_knob_radius, dragging);
+
+  blitMono(c, `X Speed: ${formatSpeed(x_speed)}`, 50, 75);
+  blitMono(c, `Y Speed: ${formatSpeed(y_speed)}`, 50, 95);
+  //blitMono(c, `Chassis: (${formatSpeed(chassis_x)}, ${formatSpeed(chassis_y)}) m`, 300, 80);
+  //blitMono(c, `Heading: ${chassis_z.toFixed(1)}°`, 300, 110);
+
+  drawButton(c, ui2_left_button_center.x, ui2_left_button_center.y, turn_left, "⟲");
+  drawButton(c, ui2_right_button_center.x, ui2_right_button_center.y, turn_right, "⟳");
+
+  drawLocationView(c, { x: 387, y: 150 }, chassis_x, chassis_y, chassis_z);
+}
+
+function draw_ui3(x_speed, y_speed, z, angletop, anglebot) {
+  //WORK IN PROGRESS
+  const c = ui2Ctx;
+  blitMono(c, "WORK IN PROGRESS", 730, 150)
+}
+
+setInterval(tick, 20);
+</script>
+</body>
+</html>
