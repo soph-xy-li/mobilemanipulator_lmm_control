@@ -651,10 +651,15 @@ function handleUi3Tap(px, py) {
     const targetXcm = dxCanvas / ARM_TAP_SCALE;
     const targetYcm = -dyCanvas / ARM_TAP_SCALE;
     const ik = solveArmIK(targetXcm, targetYcm);
+    if (!ik) {
+      log("Arm target unreachable");
+      return;
+      }
     armTargetAngletop = ik.angletop;
     armTargetAnglebot = ik.anglebot;
     armTargetPicked = true;
     updateArmTargetCanvas();
+
     log(`arm target set: top ${(ik.angletop * 180 / Math.PI).toFixed(1)}°, bottom ${(ik.anglebot * 180 / Math.PI).toFixed(1)}°`);
   }
 }
@@ -814,33 +819,83 @@ function armPosition(anglebot, angletop) {
 }
 
 // x = L1 sin(theta1) + L2 sin(theta2), y = L1 cos(theta1) + L2 cos(theta2)).
-function solveArmIK(x, y) {
-  let best = { bot: 0, top: 0, d2: Infinity };
+/*function solveArmIK(x, y) {
+  const L1 = 15;
+  const L2 = 27;
 
-  const search = (botLo, botHi, topLo, topHi, steps) => {
-    for (let i = 0; i <= steps; i++) {
-      const bot = botLo + (botHi - botLo) * (i / steps);
-      for (let j = 0; j <= steps; j++) {
-        const top = topLo + (topHi - topLo) * (j / steps);
-        const p = armPosition(bot, top);
-        const d2 = (p.x - x) ** 2 + (p.y - y) ** 2;
-        if (d2 < best.d2) best = { bot, top, d2 };
-      }
-    }
-  };
+  const topoffset = -2.556839856565194;
+  const botoffset = -1.0271229114213778;
 
-  search(0, BOT_MAX_MOTOR, 0, TOP_MAX_MOTOR, 24);
-  for (let pass = 0; pass < 3; pass++) {
-    const botSpan = BOT_MAX_MOTOR / (24 * Math.pow(3, pass));
-    const topSpan = TOP_MAX_MOTOR / (24 * Math.pow(3, pass));
-    search(
-      clamp(best.bot - botSpan, 0, BOT_MAX_MOTOR), clamp(best.bot + botSpan, 0, BOT_MAX_MOTOR),
-      clamp(best.top - topSpan, 0, TOP_MAX_MOTOR), clamp(best.top + topSpan, 0, TOP_MAX_MOTOR),
-      12
-    );
+  const r = Math.hypot(x, y);
+
+  if (r > L1 + L2 || r < Math.abs(L2 - L1)) {
+    console.log("Target unreachable", r);
+    return null;
   }
 
-  return { angletop: best.top, anglebot: best.bot };
+  const cosElbow = (r*r - L1*L1 - L2*L2) / (2 * L1 * L2);
+
+  const elbow = Math.acos(clamp(cosElbow, -1, 1));
+
+  const theta1 = Math.atan2(x, y) - Math.atan2(L2 * Math.sin(elbow), L1 + L2 * Math.cos(elbow));
+
+  const theta2 = theta1 + elbow;
+
+  let anglebot = theta1 - botoffset;
+  let angletop = theta1 - theta2 - topoffset;
+  anglebot = clamp(anglebot, 0, BOT_MAX_MOTOR);
+  angletop = clamp(angletop, 0, TOP_MAX_MOTOR);
+
+  //console.log({target:{x,y},linkAngles:{theta1: theta1 * 180/Math.PI,theta2: theta2 * 180/Math.PI},motors:{bottom: anglebot * 180/Math.PI,top: angletop * 180/Math.PI}});
+  return {anglebot, angletop};
+}
+*/
+
+function solveArmIK(x, y) {
+  const L1 = 15;
+  const L2 = 27;
+
+  const topoffset = -2.556839856565194;
+  const botoffset = -1.0271229114213778;
+
+  const r = clamp(Math.hypot(x, y), Math.abs(L2 - L1) + 1e-6, L1 + L2 - 1e-6);
+
+  const cosElbow = clamp((r * r - L1 * L1 - L2 * L2) / (2 * L1 * L2), -1, 1);
+  const baseElbow = Math.acos(cosElbow);
+
+  const normalizeAngle = (a) => {
+    a = a % (2 * Math.PI);
+    if (a > Math.PI) a -= 2 * Math.PI;
+    if (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  };
+
+  const solveBranch = (elbow) => {
+    const theta1 = normalizeAngle(
+      Math.atan2(x, y) - Math.atan2(L2 * Math.sin(elbow), L1 + L2 * Math.cos(elbow))
+    );
+    const theta2 = theta1 + elbow;
+    return {
+      anglebot: theta1 - botoffset,
+      angletop: theta1 - theta2 - topoffset,
+    };
+  };
+
+  const candidates = [solveBranch(baseElbow), solveBranch(-baseElbow)];
+  const inRange = (v, max) => v >= -1e-6 && v <= max + 1e-6;
+  const valid = candidates.find(c => inRange(c.anglebot, BOT_MAX_MOTOR) && inRange(c.angletop, TOP_MAX_MOTOR));
+
+  const pick = valid || candidates.reduce((best, c) => {
+    const clampedBot = clamp(c.anglebot, 0, BOT_MAX_MOTOR);
+    const clampedTop = clamp(c.angletop, 0, TOP_MAX_MOTOR);
+    const err = Math.abs(clampedBot - c.anglebot) + Math.abs(clampedTop - c.angletop);
+    return err < best.err ? { anglebot: clampedBot, angletop: clampedTop, err } : best;
+  }, { anglebot: 0, angletop: 0, err: Infinity });
+
+  return {
+    anglebot: clamp(pick.anglebot, 0, BOT_MAX_MOTOR),
+    angletop: clamp(pick.angletop, 0, TOP_MAX_MOTOR),
+  };
 }
 
 function updateArmTargetCanvas() {
